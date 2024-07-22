@@ -20,6 +20,7 @@ pub struct GameManager{
     board: [[i8; BOARD_SIZE]; BOARD_SIZE],
     moves: Vec<Move>,
     moves_with_no_capture: i8,
+    moves_with_no_capture_history: Vec<i8>,
     turn: Turn,
     band_player: BandPlayer,
     game_status: GameStatus,
@@ -38,6 +39,7 @@ impl GameManager {
             board: INITIAL_BOARD.clone(),
             moves: Vec::new(),
             moves_with_no_capture: 0,
+            moves_with_no_capture_history: Vec::new(),
             turn: Turn::Red,
             band_player: BandPlayer {
                 red: GamePlayer::Human,
@@ -158,6 +160,8 @@ impl GameManager {
         self.board[to.row][to.col] = self.board[from.row][from.col];
         self.board[from.row][from.col] = EMPTY;
 
+        self.moves_with_no_capture_history.push(self.moves_with_no_capture);
+
         let mut can_eat = false;
         if let Some(eat) = eat {
             self.board[eat.0.row][eat.0.col] = EMPTY;
@@ -200,10 +204,6 @@ impl GameManager {
 
         if let Some(eat) = eat {
             self.board[eat.0.row][eat.0.col] = eat.1;
-            self.moves_with_no_capture = 0;
-        }
-        else {
-            self.moves_with_no_capture -= 1;
         }
 
         if m.promotion {
@@ -215,12 +215,12 @@ impl GameManager {
             }
         }
 
+        self.moves_with_no_capture = self.moves_with_no_capture_history.pop().unwrap();
+
         self.game_status = self.calculate_game_status();
     }
 
-    pub fn get_turn(&self) -> Turn {
-        self.turn
-    }
+    pub fn get_turn(&self) -> Turn { self.turn }
 
     pub fn get_game_status(&self) -> GameStatus { self.game_status.clone() }
 

@@ -1,12 +1,11 @@
 use std::collections::HashMap;
-use bevy_mod_picking::input::debug::print;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use crate::comun::{GameStatus, Move, Turn};
 use crate::game_manager::GameManager;
 use crate::ia::brain::{BLACKVALUE, Brain, DRAWVALUE, REDVALUE};
 
-const MAX_ITERATIONS: u16 = 800;
+const MAX_ITERATIONS: u16 = 700;
 
 pub struct MonteCarlo{
     iterations_for_movement: u16,
@@ -66,7 +65,6 @@ impl MonteCarlo {
         }
 
         let suma :i32 = values.iter().sum();
-        let count_c = values.iter().count();
 
         let average = suma as f32 / (iterations as f32);
         println!("Average: {}", average);
