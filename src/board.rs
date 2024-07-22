@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+
 use bevy::{
     ecs::{component::Component, system::Commands},
     math::{Vec2, Vec3},
@@ -6,14 +7,17 @@ use bevy::{
     render::color::Color,
     sprite::{Sprite, SpriteBundle},
     transform::components::Transform,
+    window::CursorIcon
 };
 use bevy::app::AppExit;
 use bevy::asset::{AssetServer, Handle};
 use bevy::prelude::{AlignItems, BackgroundColor, BuildChildren, ButtonBundle, Changed, DespawnRecursiveExt, Entity, EventWriter, FlexDirection, Image, Interaction, JustifyContent, NodeBundle, Query, Res, ResMut, Resource, TextBundle, TextStyle, UiRect, With, Without};
 use bevy::ui::{PositionType, Style, Val};
+use bevy::window::Window;
 use bevy_mod_picking::events::{Click, Pointer};
 use bevy_mod_picking::PickableBundle;
 use bevy_mod_picking::prelude::{Listener, On};
+
 use crate::comun::{BLACK_PAWN, BOARD_SIZE, GamePlayer, GameStatus, Move, Square, Turn, WHITE_PAWN};
 use crate::GameManagerResource;
 
@@ -294,7 +298,8 @@ pub fn game_flow(
     asset_server: Res<AssetServer>,
     query: Query<Entity, With<WinnerWindow>>,
     mut transform_square_piece: Query<(&mut Handle<Image>, &mut Transform, &mut Square, &Piece)>,
-    mut piece_by_id: ResMut<PieceIdByEntity>
+    mut piece_by_id: ResMut<PieceIdByEntity>,
+    mut window: Query<&mut Window>,
 ) {
     if game_manager.0.get_game_status() != GameStatus::Playing {
         let winner_name = match game_manager.0.get_game_status() {
@@ -350,7 +355,7 @@ pub fn game_flow(
                     ))
                         .with_children(|parent| {
                             parent.spawn(TextBundle::from_section(
-                                "Aceptar",
+                                "Accept",
                                 TextStyle {
                                     font: asset_server.load("fonts/FiraSans-Bold.ttf"),
                                     font_size: 20.0,
@@ -373,6 +378,9 @@ pub fn game_flow(
         };
 
         if *current_player == GamePlayer::Computer {
+            let mut window = window.single_mut();
+            window.cursor.icon = CursorIcon::Wait;
+
             let movement = game_manager.0.computer_plays();
             move_piece(
                 &movement,
@@ -382,6 +390,8 @@ pub fn game_flow(
                 &mut piece_by_id,
                 &mut commands,
             );
+            
+            window.cursor.icon = CursorIcon::Default;
         }
     }
 }
