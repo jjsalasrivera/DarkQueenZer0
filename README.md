@@ -20,12 +20,21 @@ The first build compiles Bevy and takes a while.
 
 ## Controls
 
-- Click one of your (red) pieces to highlight its legal moves in green.
-- Click a highlighted square to move.
+- Click one of your pieces to highlight its legal moves in green, then click a
+  highlighted square to move.
 - Capturing is mandatory and you must take the **longest** available capture.
   A capture chain continues with the same piece until no more captures exist.
-- The top bar shows the turn or the result, plus four buttons:
-  `New game`, `vs Computer`, `2 Players`, and `AI: Classic`.
+- The top bar shows the turn or the result, plus five buttons:
+  `New game`, `You start`, `AI starts`, `2 Players`, and `AI: Classic`. The
+  button for the mode currently in effect is highlighted in green.
+- `You start` plays against the computer with you as **Red** (bottom), moving
+  first. This is the mode at launch.
+- `AI starts` plays against the computer with the computer as **Red**, moving
+  immediately. You play Black, and the board is rotated 180° so your pieces
+  appear at the bottom.
+- `2 Players` starts a new local game with both sides played by humans.
+- `New game` restarts the current mode.
+- While the computer is on move, the top bar shows `AI is thinking...`.
 - `AI: Classic` toggles the computer's brain between the classic UCB search
   (`AI: Classic`) and the trained AlphaZero network (`AI: Neural`). Switching
   starts a new game.

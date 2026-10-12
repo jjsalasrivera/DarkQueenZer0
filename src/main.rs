@@ -17,7 +17,7 @@ mod ia {
 }
 
 use board::setup_board;
-use crate::board::{create_pieces, HighlightedSquare, LegalMovesForPieceResource, PieceClicked, PieceIdByEntity, AiTask, game_flow, setup_ui, menu_system, status_system, start_computer_move, finish_computer_move};
+use crate::board::{create_pieces, HighlightedSquare, LegalMovesForPieceResource, PieceClicked, PieceIdByEntity, AiTask, game_flow, setup_ui, menu_system, update_menu_colors, status_system, start_computer_move, finish_computer_move};
 use crate::game_manager::GameManager;
 
 #[derive(Resource, Default)]
@@ -55,7 +55,7 @@ fn main() {
         .insert_resource(GameManagerResource(GameManager::new()))
         .init_resource::<HighlightedSquare>()
         .add_systems(Startup, (setup, setup_board, create_pieces, setup_ui))
-        .add_systems(Update, (game_flow, menu_system, status_system, finish_computer_move, start_computer_move).chain())
+        .add_systems(Update, (game_flow, update_menu_colors, menu_system, status_system, finish_computer_move, start_computer_move).chain())
         .add_plugins(DefaultPickingPlugins)
         .run();
 }
