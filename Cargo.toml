@@ -7,5 +7,8 @@ edition = "2021"
 
 [dependencies]
 bevy = "0.12.1"
-bevy_mod_picking = "0.17.0"
+bevy_mod_picking = { version = "0.17.0", default-features = false, features = ["backend_raycast", "backend_bevy_ui", "backend_sprite", "selection", "highlight"] }
 rand = "0.8.5"
+futures-lite = "2"
+candle-core = "0.11"
+candle-nn = "0.11"

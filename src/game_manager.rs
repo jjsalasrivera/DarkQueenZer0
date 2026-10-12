@@ -1,19 +1,34 @@
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, Mutex};
 use crate::comun::{BLACK_PAWN, BOARD_SIZE, EMPTY, WHITE_PAWN, WHITE_QUEEN, BLACK_QUEEN,
-                   Move, Turn, Square, GameStatus, BandPlayer, GamePlayer};
+                   Move, Turn, Square, GameStatus, BandPlayer, GamePlayer, INITIAL_BOARD};
 use crate::ia::brain::Brain;
+use crate::ia::mcts::{Mcts, DEFAULT_SIMULATIONS, MODEL_PATH};
 use crate::ia::monte_carlo_impl::MonteCarlo;
+use crate::ia::upper_confidence_bounds::UpperConfidenceBounds;
+use crate::rules;
 
-const INITIAL_BOARD: [[i8; BOARD_SIZE]; BOARD_SIZE] = [
-    [WHITE_PAWN, EMPTY, WHITE_PAWN, EMPTY, WHITE_PAWN, EMPTY, WHITE_PAWN, EMPTY],
-    [EMPTY, WHITE_PAWN, EMPTY, WHITE_PAWN, EMPTY, WHITE_PAWN, EMPTY, WHITE_PAWN],
-    [WHITE_PAWN, EMPTY, WHITE_PAWN, EMPTY, WHITE_PAWN, EMPTY, WHITE_PAWN, EMPTY],
-    [EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY],
-    [EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY],
-    [EMPTY, BLACK_PAWN, EMPTY, BLACK_PAWN, EMPTY, BLACK_PAWN, EMPTY, BLACK_PAWN],
-    [BLACK_PAWN, EMPTY, BLACK_PAWN, EMPTY, BLACK_PAWN, EMPTY, BLACK_PAWN, EMPTY],
-    [EMPTY, BLACK_PAWN, EMPTY, BLACK_PAWN, EMPTY, BLACK_PAWN, EMPTY, BLACK_PAWN],
-];
+
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum BrainType {
+    #[default]
+    UpperConfidenceBounds,
+    /// Classic MCTS alternative; reserved for comparisons and training.
+    #[allow(dead_code)]
+    MonteCarlo,
+    /// AlphaZero neural network + PUCT search.
+    #[allow(dead_code)]
+    Neural,
+}
+
+fn create_brain(brain_type: BrainType) -> Arc<Mutex<dyn Brain>> {
+    match brain_type {
+        BrainType::MonteCarlo => Arc::new(Mutex::new(MonteCarlo::new())),
+        BrainType::UpperConfidenceBounds => Arc::new(Mutex::new(UpperConfidenceBounds::new())),
+        BrainType::Neural => Arc::new(Mutex::new(Mcts::load_or_random(MODEL_PATH, DEFAULT_SIMULATIONS))),
+    }
+}
 
 #[derive(Clone)]
 pub struct GameManager{
@@ -21,10 +36,14 @@ pub struct GameManager{
     moves: Vec<Move>,
     moves_with_no_capture: i8,
     moves_with_no_capture_history: Vec<i8>,
+    forced_piece: Option<Square>,
+    forced_history: Vec<Option<Square>>,
     turn: Turn,
+    turn_history: Vec<Turn>,
     band_player: BandPlayer,
     game_status: GameStatus,
-    brain: Arc<Mutex<dyn Brain>>
+    brain: Arc<Mutex<dyn Brain>>,
+    brain_type: BrainType
 }
 
 impl Default for GameManager {
@@ -35,19 +54,94 @@ impl Default for GameManager {
 
 impl GameManager {
     pub fn new() -> GameManager {
-        GameManager {
-            board: INITIAL_BOARD.clone(),
-            moves: Vec::new(),
-            moves_with_no_capture: 0,
-            moves_with_no_capture_history: Vec::new(),
-            turn: Turn::Red,
-            band_player: BandPlayer {
+        GameManager::with_options(
+            BandPlayer {
                 red: GamePlayer::Human,
                 black: GamePlayer::Computer,
             },
+            BrainType::default(),
+        )
+    }
+
+    pub fn with_options(band_player: BandPlayer, brain_type: BrainType) -> GameManager {
+        GameManager {
+            board: INITIAL_BOARD,
+            moves: Vec::new(),
+            moves_with_no_capture: 0,
+            moves_with_no_capture_history: Vec::new(),
+            forced_piece: None,
+            forced_history: Vec::new(),
+            turn: Turn::Red,
+            turn_history: Vec::new(),
+            band_player,
             game_status: GameStatus::Playing,
-            brain: Arc::new(Mutex::new(MonteCarlo::new()))
+            brain: create_brain(brain_type),
+            brain_type,
         }
+    }
+
+    /// Creates a manager from a specific board and turn. Useful for tests and
+    /// headless training.
+    #[allow(dead_code)]
+    pub fn with_board(board: [[i8; BOARD_SIZE]; BOARD_SIZE], turn: Turn) -> GameManager {
+        let mut game_manager = GameManager::with_options(
+            BandPlayer {
+                red: GamePlayer::Human,
+                black: GamePlayer::Human,
+            },
+            BrainType::default(),
+        );
+        game_manager.board = board;
+        game_manager.turn = turn;
+        game_manager.game_status = game_manager.calculate_game_status();
+        game_manager
+    }
+
+    #[allow(dead_code)]
+    pub fn get_forced_piece(&self) -> Option<Square> {
+        self.forced_piece
+    }
+
+    /// Resets the game keeping the play mode and the AI brain.
+    pub fn reset(&mut self) {
+        self.board = INITIAL_BOARD;
+        self.moves.clear();
+        self.moves_with_no_capture = 0;
+        self.moves_with_no_capture_history.clear();
+        self.forced_piece = None;
+        self.forced_history.clear();
+        self.turn = Turn::Red;
+        self.turn_history.clear();
+        self.game_status = GameStatus::Playing;
+    }
+
+    pub fn set_band_player(&mut self, band_player: BandPlayer) {
+        self.band_player = band_player;
+    }
+
+    pub fn get_brain_type(&self) -> BrainType {
+        self.brain_type
+    }
+
+    /// Switches the computer AI. Rebuilds the brain (loading the checkpoint for
+    /// the neural one) so it takes effect immediately.
+    pub fn set_brain_type(&mut self, brain_type: BrainType) {
+        self.brain_type = brain_type;
+        self.brain = create_brain(brain_type);
+    }
+
+    pub fn get_hash(&self) -> String {
+        // Create a hasher
+        let mut hasher = DefaultHasher::new();
+
+        // Hash each field except for `brain`
+        self.board.hash(&mut hasher);
+        self.turn.hash(&mut hasher);
+        self.forced_piece.hash(&mut hasher);
+
+        // Finalize the hash and convert to hex string
+        let result = hasher.finish();
+        format!("{:x}", result)
     }
 
     #[allow(dead_code)]
@@ -81,37 +175,11 @@ impl GameManager {
 
     pub fn get_legal_moves(&mut self) -> &Vec<Move> {
         self.moves.clear();
-        let mut raw_moves: Vec<Move> = Vec::new();
 
-        for row in 0..BOARD_SIZE {
-            for col in 0..BOARD_SIZE {
-                let l_moves = match self.turn {
-                    Turn::Red => self.get_legal_moves_for_piece(row, col),
-                    Turn::Black => self.get_legal_moves_for_piece(row, col)
-                };
-
-                raw_moves.extend(l_moves.clone());
-            }
-        }
-
-        // if there is a eat move, delete all non eat moves
-        let mut has_eat = false;
-        for m in raw_moves.iter() {
-            if m.eat.is_some() {
-                has_eat = true;
-                break;
-            }
-        }
-
-        if has_eat {
-            for m in raw_moves.iter() {
-                if m.eat.is_some() {
-                    self.moves.push(m.clone());
-                }
-            }
-        } else {
-            self.moves = raw_moves;
-        }
+        self.moves = match self.forced_piece {
+            Some(from) => rules::continuation_moves(&self.board, self.turn, from),
+            None => rules::all_legal_moves(&self.board, self.turn),
+        };
 
         &self.moves
     }
@@ -122,7 +190,7 @@ impl GameManager {
         }
 
         let moves = self.get_legal_moves();
-        if moves.len() == 0 {
+        if moves.is_empty() {
             if self.turn == Turn::Red {
                 return GameStatus::BlackWins;
             } else {
@@ -153,41 +221,29 @@ impl GameManager {
     }
 
     pub fn do_move(&mut self, m: Move) {
-        let from = m.from;
-        let to = m.to;
-        let eat = m.eat;
-
-        self.board[to.row][to.col] = self.board[from.row][from.col];
-        self.board[from.row][from.col] = EMPTY;
-
         self.moves_with_no_capture_history.push(self.moves_with_no_capture);
+        self.forced_history.push(self.forced_piece);
+        self.turn_history.push(self.turn);
 
-        let mut can_eat = false;
-        if let Some(eat) = eat {
-            self.board[eat.0.row][eat.0.col] = EMPTY;
+        rules::apply_move(&mut self.board, &m);
+
+        if m.eat.is_some() {
             self.moves_with_no_capture = 0;
-
-            // check if you can eat again
-            let moves = self.get_legal_moves_for_piece(to.row, to.col);
-            for m in moves.iter() {
-                if m.eat.is_some() {
-                    can_eat = true;
-                    break;
-                }
-            }
-        }
-        else {
+        } else {
             self.moves_with_no_capture += 1;
         }
 
-        if m.promotion && self.board[to.row][to.col] == WHITE_PAWN {
-            self.board[to.row][to.col] = WHITE_QUEEN;
-        }
-        else if m.promotion && self.board[to.row][to.col] == BLACK_PAWN {
-            self.board[to.row][to.col] = BLACK_QUEEN;
-        }
+        // If the same piece can keep capturing, the turn stays and that piece is
+        // forced to move.
+        let can_eat_more = m.eat.is_some()
+            && rules::continuation_moves(&self.board, self.turn, m.to)
+                .iter()
+                .any(|c| c.eat.is_some());
 
-        if !can_eat {
+        if can_eat_more {
+            self.forced_piece = Some(m.to);
+        } else {
+            self.forced_piece = None;
             self.switch_turn();
         }
 
@@ -195,179 +251,31 @@ impl GameManager {
     }
 
     pub fn undo_move(&mut self, m: Move) {
-        let from = m.from;
-        let to = m.to;
-        let eat = m.eat;
-
-        self.board[from.row][from.col] = self.board[to.row][to.col];
-        self.board[to.row][to.col] = EMPTY;
-
-        if let Some(eat) = eat {
-            self.board[eat.0.row][eat.0.col] = eat.1;
-        }
-
-        if m.promotion {
-            if self.board[from.row][from.col] == WHITE_QUEEN {
-                self.board[from.row][from.col] = WHITE_PAWN;
-            }
-            else if self.board[from.row][from.col] == BLACK_QUEEN {
-                self.board[from.row][from.col] = BLACK_PAWN;
-            }
-        }
+        rules::undo_apply(&mut self.board, &m);
 
         self.moves_with_no_capture = self.moves_with_no_capture_history.pop().unwrap();
+        self.forced_piece = self.forced_history.pop().unwrap();
+        self.turn = self.turn_history.pop().unwrap();
 
         self.game_status = self.calculate_game_status();
     }
 
     pub fn get_turn(&self) -> Turn { self.turn }
 
-    pub fn get_game_status(&self) -> GameStatus { self.game_status.clone() }
+    pub fn get_game_status(&self) -> GameStatus { self.game_status }
 
     pub fn computer_plays(&mut self) -> Move {
         let mut brain = self.brain.lock().unwrap();
         brain.get_best_move(self.clone())
     }
 
-    fn get_legal_moves_for_piece(&self, row: usize, col: usize) -> Vec<Move> {
-        let piece = self.board[row][col];
-        let mut moves = Vec::new();
-        let cell_from = Square { row, col };
-
-        match piece {
-            WHITE_PAWN => {
-                if self.turn == Turn::Red {
-                    if row < BOARD_SIZE - 1 && col > 0 && self.board[row + 1][col - 1] == EMPTY {
-                        let promotion = row + 1 == BOARD_SIZE - 1;
-                        moves.push(Move { from: cell_from.clone(), to: Square{ row: row + 1, col: col - 1 }, turn: self.turn, eat: None, promotion });
-                    }
-                    if row < BOARD_SIZE - 1 && col < BOARD_SIZE - 1 && self.board[row + 1][col + 1] == EMPTY {
-                        let promotion = row + 1 == BOARD_SIZE - 1;
-                        moves.push(Move { from: cell_from.clone(), to: Square{ row: row + 1, col: col + 1 }, turn: self.turn, eat: None, promotion });
-                    }
-                    if row < BOARD_SIZE - 2 && col > 1 && self.is_black_piece(self.board[row + 1][col - 1]) && self.board[row + 2][col - 2] == EMPTY {
-                        let promotion = row + 2 == BOARD_SIZE - 1;
-                        moves.push(Move { from: cell_from.clone(), to: Square{ row: row + 2, col: col - 2 }, turn: self.turn, eat: Some((Square{ row: row + 1, col: col - 1 }, self.get_piece_at(row + 1, col - 1))), promotion });
-                    }
-                    if row < BOARD_SIZE - 2 && col < BOARD_SIZE - 2 && self.is_black_piece(self.board[row + 1][col + 1]) && self.board[row + 2][col + 2] == EMPTY {
-                        let promotion = row + 2 == BOARD_SIZE - 1;
-                        moves.push(Move { from: cell_from.clone(), to: Square{ row: row + 2, col: col + 2 }, turn: self.turn, eat: Some((Square{ row: row + 1, col: col + 1 }, self.get_piece_at(row + 1, col + 1))), promotion });
-                    }
-                }
-            },
-            WHITE_QUEEN => {
-                if self.turn == Turn::Red {
-                    moves.extend(self.get_queen_moves(row, col));
-                }
-            },
-            BLACK_PAWN => {
-                if self.turn == Turn::Black {
-                    if row > 0 && col > 0 && self.board[row - 1][col - 1] == EMPTY {
-                        let promotion = row - 1 == 0;
-                        moves.push(Move { from: cell_from.clone(), to: Square{ row: row - 1, col: col - 1 }, turn: self.turn, eat: None, promotion });
-                    }
-                    if row > 0 && col < BOARD_SIZE - 1 && self.board[row - 1][col + 1] == EMPTY {
-                        let promotion = row - 1 == 0;
-                        moves.push(Move { from: cell_from.clone(), to: Square{ row: row - 1, col: col + 1 }, turn: self.turn, eat: None, promotion });
-                    }
-                    if row > 1 && col > 1 && self.is_white_piece(self.board[row - 1][col - 1]) && self.board[row - 2][col - 2] == EMPTY {
-                        let promotion = row - 2 == 0;
-                        moves.push(Move { from: cell_from.clone(), to: Square{ row: row - 2, col: col - 2 }, turn: self.turn, eat: Some((Square{ row: row - 1, col: col - 1 }, self.get_piece_at(row - 1, col - 1))), promotion });
-                    }
-                    if row > 1 && col < BOARD_SIZE - 2 && self.is_white_piece(self.board[row - 1][col + 1]) && self.board[row - 2][col + 2] == EMPTY {
-                        let promotion = row - 2 == 0;
-                        moves.push(Move { from: cell_from.clone(), to: Square{ row: row - 2, col: col + 2 }, turn: self.turn, eat: Some((Square{ row: row - 1, col: col + 1 }, self.get_piece_at(row - 1, col + 1))), promotion });
-                    }
-                }
-            },
-            BLACK_QUEEN => {
-                if self.turn == Turn::Black {
-                    moves.extend(self.get_queen_moves(row, col));
-                }
-            },
-            _ => {}
-        };
-
-        moves
-    }
-
-    fn get_queen_moves(&self, row: usize, col: usize) -> Vec<Move> {
-        let mut moves = Vec::new();
-        let cell_from = Square { row, col };
-        let mut eated_square: Option<(Square, i8)> = None;
-
-        for i in 1..BOARD_SIZE {
-            if row + i < BOARD_SIZE && col + i < BOARD_SIZE {
-                if self.board[row + i][col + i] == EMPTY {
-                    moves.push(Move { from: cell_from.clone(), to: Square{ row: row + i, col: col + i }, turn: self.turn, eat: eated_square.clone(), promotion: false});
-                }
-                else if self.board[row + i][col + i] * self.board[row][col] < 0 && eated_square.is_none() {
-                    eated_square = Some((Square{ row: row + i, col: col + i }, self.get_piece_at(row + i, col + i)));
-                }
-                else {
-                    break;
-                }
-            }
-        }
-
-        eated_square = None;
-        for i in 1..BOARD_SIZE {
-            if row + i < BOARD_SIZE && col >= i {
-                if self.board[row + i][col - i] == EMPTY {
-                    moves.push(Move { from: cell_from.clone(), to: Square{ row: row + i, col: col - i }, turn: self.turn, eat: eated_square.clone(), promotion: false});
-                }
-                else if self.board[row + i][col - i] * self.board[row][col] < 0 && eated_square.is_none() {
-                    eated_square = Some((Square{ row: row + i, col: col - i }, self.get_piece_at(row + i, col - i)));
-                }
-                else {
-                    break;
-                }
-            }
-        }
-
-        eated_square = None;
-        for i in 1..BOARD_SIZE {
-            if row >= i && col + i < BOARD_SIZE {
-                if self.board[row - i][col + i] == EMPTY {
-                    moves.push(Move { from: cell_from.clone(), to: Square{ row: row - i, col: col + i }, turn: self.turn, eat: eated_square.clone(), promotion: false });
-                }
-                else if self.board[row - i][col + i] * self.board[row][col] < 0 && eated_square.is_none() {
-                    eated_square = Some((Square{ row: row - i, col: col + i }, self.get_piece_at(row - i, col + i)));
-                }
-                else {
-                    break;
-                }
-            }
-        }
-
-        eated_square = None;
-        for i in 1..BOARD_SIZE {
-            if row  >= i && col >= i {
-                if self.board[row - i][col - i] == EMPTY {
-                    moves.push(Move { from: cell_from.clone(), to: Square{ row: row - i, col: col - i }, turn: self.turn, eat: eated_square.clone(), promotion: false });
-                }
-                else if self.board[row - i][col - i] * self.board[row][col] < 0 && eated_square.is_none() {
-                    eated_square = Some((Square{ row: row - i, col: col - i }, self.get_piece_at(row - i, col - i)));
-                }
-                else {
-                    break;
-                }
-            }
-        }
-
-        moves
-    }
 
     fn is_black_piece(&self, piece: i8) -> bool {
-        piece < 0
+        rules::is_black_piece(piece)
     }
 
     fn is_white_piece(&self, piece: i8) -> bool {
-        piece > 0
-    }
-
-    fn get_piece_at(&self, row: usize, col: usize) -> i8 {
-        self.board[row][col]
+        rules::is_white_piece(piece)
     }
 
     fn switch_turn(&mut self) {
@@ -376,5 +284,134 @@ impl GameManager {
         } else {
             self.turn = Turn::Red;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty() -> [[i8; BOARD_SIZE]; BOARD_SIZE] {
+        [[EMPTY; BOARD_SIZE]; BOARD_SIZE]
+    }
+
+    #[test]
+    fn opening_has_seven_moves() {
+        let mut game_manager = GameManager::new();
+        assert_eq!(game_manager.get_legal_moves().len(), 7);
+    }
+
+    #[test]
+    fn capturing_is_mandatory() {
+        let mut board = empty();
+        board[2][2] = WHITE_PAWN;
+        board[3][3] = BLACK_PAWN;
+        board[2][6] = WHITE_PAWN; // has normal moves, but must ignore them
+
+        let mut game_manager = GameManager::with_board(board, Turn::Red);
+        let moves = game_manager.get_legal_moves().clone();
+
+        assert_eq!(moves.len(), 1);
+        assert_eq!(moves[0].from, Square { row: 2, col: 2 });
+        assert_eq!(moves[0].to, Square { row: 4, col: 4 });
+    }
+
+    #[test]
+    fn maximum_capture_is_mandatory() {
+        let mut board = empty();
+        // Two-capture chain.
+        board[0][0] = WHITE_PAWN;
+        board[1][1] = BLACK_PAWN;
+        board[3][3] = BLACK_PAWN;
+        // Single-capture chain, no continuation.
+        board[4][0] = WHITE_PAWN;
+        board[5][1] = BLACK_PAWN;
+
+        let mut game_manager = GameManager::with_board(board, Turn::Red);
+        let moves = game_manager.get_legal_moves().clone();
+
+        assert_eq!(moves.len(), 1);
+        assert_eq!(moves[0].from, Square { row: 0, col: 0 });
+        assert_eq!(moves[0].to, Square { row: 2, col: 2 });
+    }
+
+    #[test]
+    fn capture_chain_keeps_turn_and_forces_piece() {
+        let mut board = empty();
+        board[0][0] = WHITE_PAWN;
+        board[1][1] = BLACK_PAWN;
+        board[3][3] = BLACK_PAWN;
+
+        let mut game_manager = GameManager::with_board(board, Turn::Red);
+        let first = game_manager.get_legal_moves()[0];
+        game_manager.do_move(first);
+
+        assert_eq!(game_manager.get_turn(), Turn::Red);
+        assert_eq!(game_manager.get_forced_piece(), Some(Square { row: 2, col: 2 }));
+
+        let second = game_manager.get_legal_moves().clone();
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].to, Square { row: 4, col: 4 });
+
+        game_manager.do_move(second[0]);
+        assert_eq!(game_manager.get_turn(), Turn::Black);
+        assert_eq!(game_manager.get_forced_piece(), None);
+    }
+
+    #[test]
+    fn undo_restores_board_turn_and_forced_piece() {
+        let mut board = empty();
+        board[0][0] = WHITE_PAWN;
+        board[1][1] = BLACK_PAWN;
+        board[3][3] = BLACK_PAWN;
+
+        let mut game_manager = GameManager::with_board(board, Turn::Red);
+        let m = game_manager.get_legal_moves()[0];
+        game_manager.do_move(m);
+        game_manager.undo_move(m);
+
+        assert_eq!(game_manager.get_board(), &board);
+        assert_eq!(game_manager.get_turn(), Turn::Red);
+        assert_eq!(game_manager.get_forced_piece(), None);
+    }
+
+    #[test]
+    fn undo_restores_turn_after_a_normal_move() {
+        // A quiet move DOES change the turn; undo must restore it.
+        let mut game_manager = GameManager::new();
+        let m = game_manager.get_legal_moves()[0];
+        assert!(m.eat.is_none());
+        let turn_before = game_manager.get_turn();
+
+        game_manager.do_move(m);
+        assert_ne!(game_manager.get_turn(), turn_before);
+
+        game_manager.undo_move(m);
+        assert_eq!(game_manager.get_turn(), turn_before);
+        assert_eq!(game_manager.get_board(), &crate::comun::INITIAL_BOARD);
+    }
+
+    #[test]
+    fn promotion_turns_pawn_into_queen() {
+        let mut board = empty();
+        board[6][2] = WHITE_PAWN;
+
+        let mut game_manager = GameManager::with_board(board, Turn::Red);
+        let moves = game_manager.get_legal_moves().clone();
+        assert!(moves.iter().all(|m| m.promotion));
+
+        game_manager.do_move(moves[0]);
+        let row = moves[0].to.row;
+        let col = moves[0].to.col;
+        assert_eq!(game_manager.get_board()[row][col], WHITE_QUEEN);
+    }
+
+    #[test]
+    fn brain_type_can_be_switched() {
+        let mut game_manager = GameManager::new();
+        assert_eq!(game_manager.get_brain_type(), BrainType::UpperConfidenceBounds);
+
+        game_manager.set_brain_type(BrainType::MonteCarlo);
+        assert_eq!(game_manager.get_brain_type(), BrainType::MonteCarlo);
     }
 }

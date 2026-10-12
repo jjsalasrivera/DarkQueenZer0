@@ -9,20 +9,16 @@ const MAX_ITERATIONS: u16 = 700;
 
 pub struct MonteCarlo{
     iterations_for_movement: u16,
-    position_counter: u32
 }
 
 impl MonteCarlo {
     pub fn new() -> Self{
         MonteCarlo {
             iterations_for_movement: MAX_ITERATIONS,
-            position_counter: 0
         }
     }
 
     fn play_random_game(&mut self, game_manager: &mut GameManager) -> i32 {
-        self.position_counter += 1;
-
         let status = game_manager.get_game_status();
 
         if status != GameStatus::Playing {
@@ -35,7 +31,6 @@ impl MonteCarlo {
         }
 
         let moves = game_manager.get_legal_moves();
-
         // get random element from moves
         let mut rng = thread_rng();
 
@@ -46,7 +41,7 @@ impl MonteCarlo {
             v
         }
         else {
-            return match game_manager.get_turn() {
+            match game_manager.get_turn() {
                 Turn::Red => BLACKVALUE,
                 Turn::Black => REDVALUE
             }
@@ -65,18 +60,13 @@ impl MonteCarlo {
         }
 
         let suma :i32 = values.iter().sum();
-
-        let average = suma as f32 / (iterations as f32);
-        println!("Average: {}", average);
-
-        average
+        suma as f32 / (iterations as f32)
     }
 
 }
 
 impl Brain for MonteCarlo {
     fn get_best_move(&mut self, mut game_manager: GameManager) -> Move {
-        self.position_counter = 0;
         let moves = game_manager.get_legal_moves();
         let moves_cloned = moves.clone();
 
@@ -95,11 +85,7 @@ impl Brain for MonteCarlo {
 
         let movement_opt = action_dict.iter()
             .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
-            .map(|(k, _v)| k.clone());
-
-        println!("action_dict: {:?}", action_dict);
-
-        println!("Position counter: {}", self.position_counter);
+            .map(|(k, _v)| *k);
 
         match movement_opt {
             Some(m) => m,

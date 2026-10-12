@@ -9,25 +9,27 @@ use bevy::{
     transform::components::Transform,
     window::CursorIcon
 };
-use bevy::app::AppExit;
 use bevy::asset::{AssetServer, Handle};
-use bevy::prelude::{AlignItems, BackgroundColor, BuildChildren, ButtonBundle, Changed, DespawnRecursiveExt, Entity, EventWriter, FlexDirection, Image, Interaction, JustifyContent, NodeBundle, Query, Res, ResMut, Resource, TextBundle, TextStyle, UiRect, With, Without};
+use bevy::prelude::{AlignItems, BackgroundColor, BuildChildren, ButtonBundle, Changed, ChildBuilder, DespawnRecursiveExt, Entity, FlexDirection, Font, Image, Interaction, JustifyContent, NodeBundle, Query, Res, ResMut, Resource, Text, TextBundle, TextStyle, UiRect, With, Without};
 use bevy::ui::{PositionType, Style, Val};
 use bevy::window::Window;
+use bevy::tasks::{AsyncComputeTaskPool, Task};
+use futures_lite::future;
 use bevy_mod_picking::events::{Click, Pointer};
 use bevy_mod_picking::PickableBundle;
 use bevy_mod_picking::prelude::{Listener, On};
 
-use crate::comun::{BLACK_PAWN, BOARD_SIZE, GamePlayer, GameStatus, Move, Square, Turn, WHITE_PAWN};
+use crate::comun::{BandPlayer, BLACK_PAWN, BLACK_QUEEN, BOARD_SIZE, GamePlayer, GameStatus, Move, Square, Turn, WHITE_PAWN, WHITE_QUEEN};
+use crate::game_manager::BrainType;
 use crate::GameManagerResource;
 
 const CELL_SIZE: f32 = 70.0;
 const BOARD_X_OFFSET: f32 = -245.0;
-const BOARD_Y_OFFSET: f32 = -265.0; // Desplazamiento para centrar el tablero en la pantalla
+const BOARD_Y_OFFSET: f32 = -265.0; // Offset to center the board on screen
 
 const WHITE_PIECE_PATH: &str = "models/pieces/Roja.png";
 const BLACK_PIECE_PATH: &str = "models/pieces/Negra.png";
-const WHITE_QUEEN_PATH: &str = "models/pieces/Dama_Roja.png";
+const WHITE_QUEEN_PATH: &str = "models/pieces/Dama_roja.png";
 const BLACK_QUEEN_PATH: &str = "models/pieces/Dama_Negra.png";
 
 #[derive(Resource, Default)]
@@ -56,12 +58,36 @@ pub struct LegalMovesForPieceResource {
 #[derive(Resource, Default)]
 pub struct PieceIdByEntity(HashMap<usize, Entity>);
 
+/// Background task that computes the AI move.
+#[derive(Resource, Default)]
+pub struct AiTask {
+    task: Option<Task<Move>>,
+}
+
 #[derive(Component)]
 pub struct WinnerWindow;
-#[derive(Component)]
-pub struct AcceptButton;
 
-// Función para inicializar el tablero
+#[derive(Component)]
+pub struct StatusText;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum MenuAction {
+    NewGame,
+    VsComputer,
+    TwoPlayers,
+    ToggleBrain,
+}
+
+#[derive(Component)]
+pub struct MenuButton {
+    pub action: MenuAction,
+}
+
+/// Label of the button that toggles the computer AI.
+#[derive(Component)]
+pub struct BrainButtonLabel;
+
+// Set up the board
 pub fn setup_board(mut commands: Commands) {
     for row in 0..BOARD_SIZE {
         for col in 0..BOARD_SIZE {
@@ -90,58 +116,280 @@ pub fn setup_board(mut commands: Commands) {
 }
 
 pub fn create_pieces(mut commands: Commands, asset_server: Res<AssetServer>, game_manager: Res<GameManagerResource>, mut square_by_id: ResMut<PieceIdByEntity>) {
+    let board = *game_manager.0.get_board();
+    spawn_pieces(&mut commands, &asset_server, &board, &mut square_by_id);
+}
+
+/// Spawns the piece entities for the given board.
+pub fn spawn_pieces(
+    commands: &mut Commands,
+    asset_server: &AssetServer,
+    board: &[[i8; BOARD_SIZE]; BOARD_SIZE],
+    square_by_id: &mut PieceIdByEntity,
+) {
     let white_piece: Handle<Image> = asset_server.load(WHITE_PIECE_PATH);
     let black_piece: Handle<Image> = asset_server.load(BLACK_PIECE_PATH);
+    let white_queen: Handle<Image> = asset_server.load(WHITE_QUEEN_PATH);
+    let black_queen: Handle<Image> = asset_server.load(BLACK_QUEEN_PATH);
 
-    let board = game_manager.0.get_board();
-
-    for row in 0..BOARD_SIZE {
-        for col in 0..BOARD_SIZE {
+    for (row, row_values) in board.iter().enumerate() {
+        let y = row as f32 * CELL_SIZE + BOARD_Y_OFFSET;
+        for (col, &piece) in row_values.iter().enumerate() {
             let x = col as f32 * CELL_SIZE + BOARD_X_OFFSET;
-            let y = row as f32 * CELL_SIZE + BOARD_Y_OFFSET;
 
-            println!("Board[{}][{}]: {}", row, col, board[row][col]);
-
-            let piece = board[row][col];
-            let tupla = match piece {
-                WHITE_PAWN => Some((SpriteBundle {
-                    texture: white_piece.clone(),
-                    transform: {
-                        let mut transform = Transform::from_xyz(x, y, 0.1);
-                        transform.scale = Vec3::splat(0.4);
-                        transform
-                    },
-                    ..Default::default()
-                },
-                                              Square { row, col },
-                                              Piece{ piece_type: WHITE_PAWN, id: (row * 10) + col },
-                                              PickableBundle::default(),
-                                              On::<Pointer<Click>>::run(piece_click_event)
-                )),
-                BLACK_PAWN => Some((SpriteBundle {
-                    texture: black_piece.clone(),
-                    transform: {
-                        let mut transform = Transform::from_xyz(x, y, 0.1);
-                        transform.scale = Vec3::splat(0.4);
-                        transform
-                    },
-                    ..Default::default()
-                },
-                                              Square { row, col }, Piece{ piece_type: BLACK_PAWN, id: (row * 10) + col },
-                                              PickableBundle::default(), On::<Pointer<Click>>::run(piece_click_event)
-                )),
-                _ => None
+            let texture = match piece {
+                WHITE_PAWN => Some(white_piece.clone()),
+                BLACK_PAWN => Some(black_piece.clone()),
+                WHITE_QUEEN => Some(white_queen.clone()),
+                BLACK_QUEEN => Some(black_queen.clone()),
+                _ => None,
             };
 
-            if let Some(tupla) = tupla {
-                let id = commands.spawn(tupla).id();
-                square_by_id.0.insert((row * 10 ) + col, id);
+            if let Some(texture) = texture {
+                let mut transform = Transform::from_xyz(x, y, 0.1);
+                transform.scale = Vec3::splat(0.4);
+
+                let entity = commands
+                    .spawn((
+                        SpriteBundle {
+                            texture,
+                            transform,
+                            ..Default::default()
+                        },
+                        Square { row, col },
+                        Piece { piece_type: piece, id: (row * 10) + col },
+                        PickableBundle::default(),
+                        On::<Pointer<Click>>::run(piece_click_event),
+                    ))
+                    .id();
+
+                square_by_id.0.insert((row * 10) + col, entity);
             }
         }
     }
 }
 
+// ---------------------------------------------------------------------------
+// UI: top bar with status and menu buttons
+// ---------------------------------------------------------------------------
 
+pub fn setup_ui(mut commands: Commands, asset_server: Res<AssetServer>, game_manager: Res<GameManagerResource>) {
+    let font: Handle<Font> = asset_server.load("fonts/FiraSans-Bold.ttf");
+
+    commands
+        .spawn(NodeBundle {
+            style: Style {
+                width: Val::Percent(100.0),
+                height: Val::Px(72.0),
+                position_type: PositionType::Absolute,
+                top: Val::Px(0.0),
+                left: Val::Px(0.0),
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::SpaceBetween,
+                padding: UiRect::all(Val::Px(10.0)),
+                ..default()
+            },
+            background_color: Color::rgb(0.12, 0.12, 0.14).into(),
+            ..default()
+        })
+        .with_children(|parent| {
+            parent.spawn((
+                TextBundle::from_section(
+                    "Red's turn",
+                    TextStyle {
+                        font: font.clone(),
+                        font_size: 24.0,
+                        color: Color::WHITE,
+                    },
+                ),
+                StatusText,
+            ));
+
+            parent
+                .spawn(NodeBundle {
+                    style: Style {
+                        flex_direction: FlexDirection::Row,
+                        align_items: AlignItems::Center,
+                        ..default()
+                    },
+                    ..default()
+                })
+                .with_children(|row| {
+                    spawn_menu_button(row, &font, "New game", MenuAction::NewGame);
+                    spawn_menu_button(row, &font, "vs Computer", MenuAction::VsComputer);
+                    spawn_menu_button(row, &font, "2 Players", MenuAction::TwoPlayers);
+                    spawn_brain_button(row, &font, brain_label(game_manager.0.get_brain_type()));
+                });
+        });
+}
+
+fn spawn_menu_button(parent: &mut ChildBuilder, font: &Handle<Font>, label: &str, action: MenuAction) {
+    parent
+        .spawn((
+            ButtonBundle {
+                style: Style {
+                    width: Val::Px(140.0),
+                    height: Val::Px(48.0),
+                    margin: UiRect::all(Val::Px(4.0)),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    ..default()
+                },
+                background_color: Color::rgb(0.30, 0.35, 0.50).into(),
+                ..default()
+            },
+            MenuButton { action },
+        ))
+        .with_children(|parent| {
+            parent.spawn(TextBundle::from_section(
+                label,
+                TextStyle {
+                    font: font.clone(),
+                    font_size: 18.0,
+                    color: Color::WHITE,
+                },
+            ));
+        });
+}
+
+/// Text of the button that toggles the computer AI.
+fn brain_label(brain: BrainType) -> &'static str {
+    match brain {
+        BrainType::Neural => "AI: Neural",
+        _ => "AI: Classic",
+    }
+}
+
+fn spawn_brain_button(parent: &mut ChildBuilder, font: &Handle<Font>, label: &str) {
+    parent
+        .spawn((
+            ButtonBundle {
+                style: Style {
+                    width: Val::Px(150.0),
+                    height: Val::Px(48.0),
+                    margin: UiRect::all(Val::Px(4.0)),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    ..default()
+                },
+                background_color: Color::rgb(0.35, 0.30, 0.50).into(),
+                ..default()
+            },
+            MenuButton { action: MenuAction::ToggleBrain },
+        ))
+        .with_children(|parent| {
+            parent.spawn((
+                TextBundle::from_section(
+                    label,
+                    TextStyle {
+                        font: font.clone(),
+                        font_size: 16.0,
+                        color: Color::WHITE,
+                    },
+                ),
+                BrainButtonLabel,
+            ));
+        });
+}
+
+/// Updates the status text with the turn or the result.
+pub fn status_system(game_manager: Res<GameManagerResource>, mut text_query: Query<&mut Text, With<StatusText>>) {
+    let message = match game_manager.0.get_game_status() {
+        GameStatus::Playing => match game_manager.0.get_turn() {
+            Turn::Red => "Red's turn".to_string(),
+            Turn::Black => "Black's turn".to_string(),
+        },
+        GameStatus::RedWins => "Red wins!".to_string(),
+        GameStatus::BlackWins => "Black wins!".to_string(),
+        GameStatus::Draw => "Draw".to_string(),
+    };
+
+    if let Ok(mut text) = text_query.get_single_mut() {
+        if text.sections[0].value != message {
+            text.sections[0].value = message;
+        }
+    }
+}
+
+/// Handles the menu buttons: switches mode or restarts the game.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn menu_system(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    mut game_manager: ResMut<GameManagerResource>,
+    mut interactions: Query<(&Interaction, &MenuButton, &mut BackgroundColor), (Changed<Interaction>, With<MenuButton>)>,
+    pieces: Query<Entity, With<Piece>>,
+    winner_windows: Query<Entity, With<WinnerWindow>>,
+    mut piece_by_id: ResMut<PieceIdByEntity>,
+    mut squares: Query<(&mut Sprite, &Square), Without<Piece>>,
+    mut highlighted: ResMut<HighlightedSquare>,
+    mut legal_moves: ResMut<LegalMovesForPieceResource>,
+    mut ai_task: ResMut<AiTask>,
+    mut brain_labels: Query<&mut Text, With<BrainButtonLabel>>,
+) {
+    for (interaction, button, mut color) in &mut interactions {
+        match *interaction {
+            Interaction::Pressed => {
+                match button.action {
+                    MenuAction::VsComputer => game_manager.0.set_band_player(BandPlayer {
+                        red: GamePlayer::Human,
+                        black: GamePlayer::Computer,
+                    }),
+                    MenuAction::TwoPlayers => game_manager.0.set_band_player(BandPlayer {
+                        red: GamePlayer::Human,
+                        black: GamePlayer::Human,
+                    }),
+                    MenuAction::ToggleBrain => {
+                        let next = match game_manager.0.get_brain_type() {
+                            BrainType::Neural => BrainType::UpperConfidenceBounds,
+                            _ => BrainType::Neural,
+                        };
+                        game_manager.0.set_brain_type(next);
+                    }
+                    MenuAction::NewGame => {}
+                }
+
+                if let Ok(mut text) = brain_labels.get_single_mut() {
+                    text.sections[0].value =
+                        brain_label(game_manager.0.get_brain_type()).to_string();
+                }
+
+                // Reset the logical state and rebuild the scene.
+                ai_task.task = None;
+                game_manager.0.reset();
+
+                for entity in &pieces {
+                    commands.entity(entity).despawn_recursive();
+                }
+                for entity in &winner_windows {
+                    commands.entity(entity).despawn_recursive();
+                }
+                piece_by_id.0.clear();
+
+                for (mut sprite, square) in &mut squares {
+                    sprite.color = if (square.row + square.col) % 2 == 0 {
+                        Color::OLIVE
+                    } else {
+                        Color::BEIGE
+                    };
+                }
+
+                highlighted.squares.clear();
+                legal_moves.moves.clear();
+
+                let board = *game_manager.0.get_board();
+                spawn_pieces(&mut commands, &asset_server, &board, &mut piece_by_id);
+            }
+            Interaction::Hovered => *color = Color::rgb(0.40, 0.45, 0.60).into(),
+            Interaction::None => *color = Color::rgb(0.30, 0.35, 0.50).into(),
+        }
+    }
+}
+
+
+
+#[allow(clippy::too_many_arguments)]
 fn square_click_event(
     event: Listener<Pointer<Click>>,
     asset_server: Res<AssetServer>,
@@ -158,8 +406,8 @@ fn square_click_event(
     let square_clicked = empty_square.get(event.target).unwrap();
     //println!("Square clicked: {:?}", square_clicked);
 
-    if highlighted_square.squares.iter().any(|square| square.row == square_clicked.row && square.col == square_clicked.col) {
-        if piece_clicked.clicked {
+    if highlighted_square.squares.iter().any(|square| square.row == square_clicked.row && square.col == square_clicked.col)
+        && piece_clicked.clicked {
             //println!("Piece clicked: {:?}", piece_clicked.square);
             piece_clicked.clicked = false;
 
@@ -176,7 +424,6 @@ fn square_click_event(
                 );
             }
         }
-    }
 }
 
 fn piece_click_event(event: Listener<Pointer<Click>>,
@@ -207,7 +454,7 @@ fn piece_click_event(event: Listener<Pointer<Click>>,
                 &mut squares,
                 &mut highlighted_square.squares
             );
-            legal_moves_for_piece.moves.push(legal_move.clone());
+            legal_moves_for_piece.moves.push(*legal_move);
         }
     }
 }
@@ -232,8 +479,8 @@ fn move_piece(
         let delta_x = move_to.to.col as f32 * CELL_SIZE + BOARD_X_OFFSET - transform.translation.x;
         let delta_y = move_to.to.row as f32 * CELL_SIZE + BOARD_Y_OFFSET - transform.translation.y;
 
-        transform.translation = transform.translation + Vec3::new(delta_x, delta_y, 0.1);
-        game_manager.0.do_move(move_to.clone());
+        transform.translation += Vec3::new(delta_x, delta_y, 0.1);
+        game_manager.0.do_move(*move_to);
 
         square_piece.row = move_to.to.row;
         square_piece.col = move_to.to.col;
@@ -265,7 +512,7 @@ fn highlight_square(dest_square: &Square, sprite_square: &mut Query<(&mut Sprite
     for (mut sprite, square) in sprite_square.iter_mut() {
         if square.row == dest_square.row && square.col == dest_square.col {
             sprite.color = Color::GREEN;
-            highlighted_square.push(dest_square.clone());
+            highlighted_square.push(*dest_square);
             break;
         }
     }
@@ -294,12 +541,9 @@ fn get_id_from_square(square: Square, pieces: &mut Query<(&mut Handle<Image>, &m
 
 pub fn game_flow(
     mut commands: Commands,
-    mut game_manager: ResMut<GameManagerResource>,
+    game_manager: Res<GameManagerResource>,
     asset_server: Res<AssetServer>,
     query: Query<Entity, With<WinnerWindow>>,
-    mut transform_square_piece: Query<(&mut Handle<Image>, &mut Transform, &mut Square, &Piece)>,
-    mut piece_by_id: ResMut<PieceIdByEntity>,
-    mut window: Query<&mut Window>,
 ) {
     if game_manager.0.get_game_status() != GameStatus::Playing {
         let winner_name = match game_manager.0.get_game_status() {
@@ -331,7 +575,7 @@ pub fn game_flow(
                 ))
                 .with_children(|parent| {
                     parent.spawn(TextBundle::from_section(
-                        format!("¡{}", winner_name),
+                        winner_name.to_string(),
                         TextStyle {
                             font: asset_server.load("fonts/FiraSans-Bold.ttf"),
                             font_size: 24.0,
@@ -351,11 +595,11 @@ pub fn game_flow(
                             background_color: Color::rgb(0.5, 0.5, 0.5).into(),
                             ..default()
                         },
-                        AcceptButton,
+                        MenuButton { action: MenuAction::NewGame },
                     ))
                         .with_children(|parent| {
                             parent.spawn(TextBundle::from_section(
-                                "Accept",
+                                "New game",
                                 TextStyle {
                                     font: asset_server.load("fonts/FiraSans-Bold.ttf"),
                                     font_size: 20.0,
@@ -370,47 +614,64 @@ pub fn game_flow(
         for entity in &query {
             commands.entity(entity).despawn_recursive();
         }
-
-        let current_turn = game_manager.0.get_turn();
-        let current_player = match current_turn {
-            Turn::Red => &game_manager.0.get_band_player().red,
-            Turn::Black => &game_manager.0.get_band_player().black,
-        };
-
-        if *current_player == GamePlayer::Computer {
-            let mut window = window.single_mut();
-            window.cursor.icon = CursorIcon::Wait;
-
-            let movement = game_manager.0.computer_plays();
-            move_piece(
-                &movement,
-                &mut transform_square_piece,
-                &asset_server,
-                &mut game_manager,
-                &mut piece_by_id,
-                &mut commands,
-            );
-            
-            window.cursor.icon = CursorIcon::Default;
-        }
     }
 }
 
-pub fn button_system(
-    mut interaction_query: Query<(&Interaction, &mut BackgroundColor), (Changed<Interaction>, With<AcceptButton>)>,
-    mut exit: EventWriter<AppExit>,
+/// Starts the background AI move computation if it is the computer's turn and
+/// no task is already running.
+pub fn start_computer_move(
+    game_manager: Res<GameManagerResource>,
+    mut ai_task: ResMut<AiTask>,
+    mut window: Query<&mut Window>,
 ) {
-    for (interaction, mut color) in &mut interaction_query {
-        match *interaction {
-            Interaction::Pressed => {
-                exit.send(AppExit);
-            }
-            Interaction::Hovered => {
-                *color = Color::rgb(0.6, 0.6, 0.6).into();
-            }
-            Interaction::None => {
-                *color = Color::rgb(0.5, 0.5, 0.5).into();
-            }
+    if ai_task.task.is_some() || game_manager.0.get_game_status() != GameStatus::Playing {
+        return;
+    }
+
+    let current_player = match game_manager.0.get_turn() {
+        Turn::Red => game_manager.0.get_band_player().red,
+        Turn::Black => game_manager.0.get_band_player().black,
+    };
+    if current_player != GamePlayer::Computer {
+        return;
+    }
+
+    let mut snapshot = game_manager.0.clone();
+    let task = AsyncComputeTaskPool::get().spawn(async move { snapshot.computer_plays() });
+    ai_task.task = Some(task);
+
+    if let Ok(mut window) = window.get_single_mut() {
+        window.cursor.icon = CursorIcon::Wait;
+    }
+}
+
+/// Collects the AI-computed move and applies it to the board.
+pub fn finish_computer_move(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    mut ai_task: ResMut<AiTask>,
+    mut game_manager: ResMut<GameManagerResource>,
+    mut transform_square_piece: Query<(&mut Handle<Image>, &mut Transform, &mut Square, &Piece)>,
+    mut piece_by_id: ResMut<PieceIdByEntity>,
+    mut window: Query<&mut Window>,
+) {
+    let Some(task) = ai_task.task.as_mut() else {
+        return;
+    };
+
+    if let Some(movement) = future::block_on(future::poll_once(task)) {
+        ai_task.task = None;
+        move_piece(
+            &movement,
+            &mut transform_square_piece,
+            &asset_server,
+            &mut game_manager,
+            &mut piece_by_id,
+            &mut commands,
+        );
+
+        if let Ok(mut window) = window.get_single_mut() {
+            window.cursor.icon = CursorIcon::Default;
         }
     }
 }

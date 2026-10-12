@@ -7,6 +7,17 @@ pub const WHITE_QUEEN: i8 = 2;
 pub const BLACK_QUEEN: i8 = -2;
 pub const EMPTY: i8 = 0;
 
+pub const INITIAL_BOARD: [[i8; BOARD_SIZE]; BOARD_SIZE] = [
+    [WHITE_PAWN, EMPTY, WHITE_PAWN, EMPTY, WHITE_PAWN, EMPTY, WHITE_PAWN, EMPTY],
+    [EMPTY, WHITE_PAWN, EMPTY, WHITE_PAWN, EMPTY, WHITE_PAWN, EMPTY, WHITE_PAWN],
+    [WHITE_PAWN, EMPTY, WHITE_PAWN, EMPTY, WHITE_PAWN, EMPTY, WHITE_PAWN, EMPTY],
+    [EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY],
+    [EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY],
+    [EMPTY, BLACK_PAWN, EMPTY, BLACK_PAWN, EMPTY, BLACK_PAWN, EMPTY, BLACK_PAWN],
+    [BLACK_PAWN, EMPTY, BLACK_PAWN, EMPTY, BLACK_PAWN, EMPTY, BLACK_PAWN, EMPTY],
+    [EMPTY, BLACK_PAWN, EMPTY, BLACK_PAWN, EMPTY, BLACK_PAWN, EMPTY, BLACK_PAWN],
+];
+
 #[derive(Component, Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Square {
     pub row: usize,
@@ -29,7 +40,7 @@ pub enum Turn {
     Black,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum GameStatus {
     #[default]
     Playing,
@@ -38,36 +49,14 @@ pub enum GameStatus {
     Draw,
 }
 
-impl PartialEq for GameStatus {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (GameStatus::Playing, GameStatus::Playing) => true,
-            (GameStatus::RedWins, GameStatus::RedWins) => true,
-            (GameStatus::BlackWins, GameStatus::BlackWins) => true,
-            (GameStatus::Draw, GameStatus::Draw) => true,
-            _ => false
-        }
-    }
-}
-
-#[derive(Clone, Default)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum GamePlayer {
     #[default]
     Human,
     Computer,
 }
 
-impl PartialEq for GamePlayer {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (GamePlayer::Human, GamePlayer::Human) => true,
-            (GamePlayer::Computer, GamePlayer::Computer) => true,
-            _ => false
-        }
-    }
-}
-
-#[derive(Clone, Default)]
+#[derive(Clone, Copy, Default, Hash)]
 pub struct BandPlayer {
     pub red: GamePlayer,
     pub black: GamePlayer,

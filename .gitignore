@@ -1,1 +1,7 @@
 /target
+.DS_Store
+.idea/
+*.iml
+
+# Trained weights (generated with `cargo run -- train`)
+/assets/models/*.safetensors
